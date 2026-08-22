@@ -3,8 +3,12 @@ class UXNVoiceBot extends HTMLElement {
     super();
     this.attachShadow({ mode: "open" });
     this.microphoneStream = null;
+    this.peerConnection = null;
+    this.dataChannel = null;
     this.timer = null;
+    this.sessionTimeout = null;
     this.seconds = 0;
+    this.sessionActive = false;
   }
 
   connectedCallback() {
@@ -20,23 +24,35 @@ class UXNVoiceBot extends HTMLElement {
       this.shadowRoot.querySelector("#orb");
     this.timerText =
       this.shadowRoot.querySelector("#timer");
+    this.remoteAudio =
+      this.shadowRoot.querySelector("#remoteAudio");
 
     this.startButton.addEventListener(
       "click",
-      () => this.startMicrophone()
+      () => this.startConversation()
     );
 
     this.endButton.addEventListener(
       "click",
-      () => this.stopMicrophone()
+      () => this.endConversation()
     );
   }
 
   disconnectedCallback() {
-    this.stopMicrophone();
+    this.endConversation();
   }
 
-  async startMicrophone() {
+  getTokenEndpoint() {
+    // Use the latest Wix test-site backend while UXN AI is being tested.
+    // Remove "?rc=test-site" when publishing the final production version.
+    return "https://www.utopianxn.com/_functions/uxnRealtimeToken?rc=test-site";
+  }
+
+  async startConversation() {
+    if (this.sessionActive) {
+      return;
+    }
+
     if (!navigator.mediaDevices?.getUserMedia) {
       this.setStatus(
         "Microphone access is not supported by this browser.",
@@ -48,22 +64,111 @@ class UXNVoiceBot extends HTMLElement {
     this.setStatus("Requesting microphone permission...", "waiting");
 
     try {
-      this.microphoneStream =
-        await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-          }
+      this.microphoneStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+
+      this.setStatus("Connecting to UXN AI...", "waiting");
+
+      const tokenResponse = await fetch(this.getTokenEndpoint(), {
+        method: "GET",
+        headers: {
+          Accept: "application/json"
+        },
+        cache: "no-store"
+      });
+
+      const tokenData = await tokenResponse.json();
+
+      if (!tokenResponse.ok || !tokenData.value) {
+        throw new Error(
+          tokenData.error || "Unable to create a secure voice session."
+        );
+      }
+
+      this.peerConnection = new RTCPeerConnection();
+
+      this.peerConnection.ontrack = (event) => {
+        this.remoteAudio.srcObject = event.streams[0];
+        this.remoteAudio.play().catch(() => {});
+      };
+
+      this.peerConnection.onconnectionstatechange = () => {
+        const state = this.peerConnection?.connectionState;
+
+        if (state === "connected") {
+          this.setStatus("Listening...", "active");
+        }
+
+        if (state === "failed" || state === "disconnected") {
+          this.endConversation(
+            "The voice connection ended. Please try again.",
+            "error"
+          );
+        }
+      };
+
+      this.microphoneStream
+        .getTracks()
+        .forEach((track) => {
+          this.peerConnection.addTrack(track, this.microphoneStream);
         });
+
+      this.dataChannel =
+        this.peerConnection.createDataChannel("oai-events");
+
+      this.dataChannel.addEventListener("message", (event) => {
+        this.handleRealtimeEvent(event);
+      });
+
+      const offer = await this.peerConnection.createOffer();
+      await this.peerConnection.setLocalDescription(offer);
+
+      const realtimeResponse = await fetch(
+        "https://api.openai.com/v1/realtime/calls",
+        {
+          method: "POST",
+          body: offer.sdp,
+          headers: {
+            Authorization: `Bearer ${tokenData.value}`,
+            "Content-Type": "application/sdp"
+          }
+        }
+      );
+
+      if (!realtimeResponse.ok) {
+        const details = await realtimeResponse.text();
+        throw new Error(`Realtime connection failed: ${details}`);
+      }
+
+      const answer = {
+        type: "answer",
+        sdp: await realtimeResponse.text()
+      };
+
+      await this.peerConnection.setRemoteDescription(answer);
 
       this.startButton.disabled = true;
       this.endButton.disabled = false;
       this.orb.classList.add("active");
+      this.sessionActive = true;
 
       this.setStatus("Listening...", "active");
       this.startTimer();
+
+      this.sessionTimeout = setTimeout(() => {
+        this.endConversation(
+          "Your five-minute session has ended.",
+          "ready"
+        );
+      }, 5 * 60 * 1000);
     } catch (error) {
+      console.error("UXN voice session error:", error);
+
       if (
         error.name === "NotAllowedError" ||
         error.name === "PermissionDeniedError"
@@ -74,14 +179,51 @@ class UXNVoiceBot extends HTMLElement {
         );
       } else {
         this.setStatus(
-          "The microphone could not be started.",
+          "UXN AI could not connect. Please try again.",
           "error"
         );
       }
+
+      this.cleanUpConnection();
     }
   }
 
-  stopMicrophone() {
+  handleRealtimeEvent(messageEvent) {
+    try {
+      const event = JSON.parse(messageEvent.data);
+
+      switch (event.type) {
+        case "input_audio_buffer.speech_started":
+          this.setStatus("Listening...", "active");
+          break;
+
+        case "input_audio_buffer.speech_stopped":
+        case "response.created":
+          this.setStatus("Thinking...", "waiting");
+          break;
+
+        case "response.output_audio.delta":
+          this.setStatus("Speaking...", "active");
+          break;
+
+        case "response.done":
+          this.setStatus("Listening...", "active");
+          break;
+
+        case "error":
+          console.error("OpenAI Realtime error:", event.error);
+          this.setStatus(
+            "There was a voice-session error. Please try again.",
+            "error"
+          );
+          break;
+      }
+    } catch (error) {
+      console.error("Could not read a Realtime event:", error);
+    }
+  }
+
+  cleanUpConnection() {
     if (this.microphoneStream) {
       this.microphoneStream
         .getTracks()
@@ -89,6 +231,33 @@ class UXNVoiceBot extends HTMLElement {
 
       this.microphoneStream = null;
     }
+
+    if (this.dataChannel) {
+      this.dataChannel.close();
+      this.dataChannel = null;
+    }
+
+    if (this.peerConnection) {
+      this.peerConnection.close();
+      this.peerConnection = null;
+    }
+
+    if (this.remoteAudio) {
+      this.remoteAudio.pause();
+      this.remoteAudio.srcObject = null;
+    }
+
+    clearTimeout(this.sessionTimeout);
+    this.sessionTimeout = null;
+
+    this.sessionActive = false;
+  }
+
+  endConversation(
+    finalMessage = "Ready when you are.",
+    finalState = "ready"
+  ) {
+    this.cleanUpConnection();
 
     clearInterval(this.timer);
     this.timer = null;
@@ -111,7 +280,7 @@ class UXNVoiceBot extends HTMLElement {
     }
 
     if (this.statusText) {
-      this.setStatus("Ready when you are.", "ready");
+      this.setStatus(finalMessage, finalState);
     }
   }
 
@@ -378,6 +547,8 @@ class UXNVoiceBot extends HTMLElement {
       </style>
 
       <section class="bot">
+        <audio id="remoteAudio" autoplay playsinline hidden></audio>
+
         <div class="eyebrow">UXN AI System</div>
 
         <h1>
