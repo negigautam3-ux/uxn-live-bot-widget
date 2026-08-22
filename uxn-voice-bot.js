@@ -45,8 +45,7 @@ class UXNVoiceBot extends HTMLElement {
   getTokenEndpoint() {
     // Use the latest Wix test-site backend while UXN AI is being tested.
     // Remove "?rc=test-site" when publishing the final production version.
-    return "https://www.utopianxn.com/_functions/uxnRealtimeToken?rc=test-site";
-  }
+return "https://www.utopianxn.com/_functions-dev/uxnRealtimeToken";  }
 
   async startConversation() {
     if (this.sessionActive) {
