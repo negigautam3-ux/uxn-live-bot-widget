@@ -9,6 +9,7 @@ class UXNVoiceBot extends HTMLElement {
     this.sessionTimeout = null;
     this.seconds = 0;
     this.sessionActive = false;
+    this.welcomeSent = false;
   }
 
   connectedCallback() {
@@ -123,6 +124,10 @@ class UXNVoiceBot extends HTMLElement {
         this.handleRealtimeEvent(event);
       });
 
+      this.dataChannel.addEventListener("open", () => {
+        this.sendWelcomeGreeting();
+      });
+
       const offer = await this.peerConnection.createOffer();
       await this.peerConnection.setLocalDescription(offer);
 
@@ -196,7 +201,12 @@ class UXNVoiceBot extends HTMLElement {
           break;
 
         case "input_audio_buffer.speech_stopped":
+          this.setMicrophoneEnabled(false);
+          this.setStatus("Thinking...", "waiting");
+          break;
+
         case "response.created":
+          this.setMicrophoneEnabled(false);
           this.setStatus("Thinking...", "waiting");
           break;
 
@@ -204,12 +214,24 @@ class UXNVoiceBot extends HTMLElement {
           this.setStatus("Speaking...", "active");
           break;
 
+        case "output_audio_buffer.started":
+          this.setMicrophoneEnabled(false);
+          this.setStatus("Speaking...", "active");
+          break;
+
         case "response.done":
+          this.setStatus("Speaking...", "active");
+          break;
+
+        case "output_audio_buffer.stopped":
+        case "output_audio_buffer.cleared":
+          this.setMicrophoneEnabled(true);
           this.setStatus("Listening...", "active");
           break;
 
         case "error":
           console.error("OpenAI Realtime error:", event.error);
+          this.setMicrophoneEnabled(true);
           this.setStatus(
             "There was a voice-session error. Please try again.",
             "error"
@@ -219,6 +241,42 @@ class UXNVoiceBot extends HTMLElement {
     } catch (error) {
       console.error("Could not read a Realtime event:", error);
     }
+  }
+
+  sendWelcomeGreeting() {
+    if (
+      this.welcomeSent ||
+      !this.dataChannel ||
+      this.dataChannel.readyState !== "open"
+    ) {
+      return;
+    }
+
+    this.welcomeSent = true;
+    this.setMicrophoneEnabled(false);
+    this.setStatus("Speaking...", "active");
+
+    this.dataChannel.send(
+      JSON.stringify({
+        type: "response.create",
+        response: {
+          instructions:
+            "Warmly say exactly: Welcome to UXN AI, created by House Utopian Experience. Experience Utopia with me. Do not add anything else to this opening greeting."
+        }
+      })
+    );
+  }
+
+  setMicrophoneEnabled(enabled) {
+    if (!this.microphoneStream) {
+      return;
+    }
+
+    this.microphoneStream
+      .getAudioTracks()
+      .forEach((track) => {
+        track.enabled = enabled;
+      });
   }
 
   cleanUpConnection() {
@@ -249,6 +307,7 @@ class UXNVoiceBot extends HTMLElement {
     this.sessionTimeout = null;
 
     this.sessionActive = false;
+    this.welcomeSent = false;
   }
 
   endConversation(
