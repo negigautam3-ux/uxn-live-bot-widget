@@ -201,12 +201,10 @@ class UXNVoiceBot extends HTMLElement {
           break;
 
         case "input_audio_buffer.speech_stopped":
-          this.setMicrophoneEnabled(false);
           this.setStatus("Thinking...", "waiting");
           break;
 
         case "response.created":
-          this.setMicrophoneEnabled(false);
           this.setStatus("Thinking...", "waiting");
           break;
 
@@ -215,7 +213,6 @@ class UXNVoiceBot extends HTMLElement {
           break;
 
         case "output_audio_buffer.started":
-          this.setMicrophoneEnabled(false);
           this.setStatus("Speaking...", "active");
           break;
 
@@ -225,7 +222,6 @@ class UXNVoiceBot extends HTMLElement {
 
         case "output_audio_buffer.stopped":
         case "output_audio_buffer.cleared":
-          this.setMicrophoneEnabled(true);
           this.setStatus("Listening...", "active");
           break;
 
@@ -253,7 +249,6 @@ class UXNVoiceBot extends HTMLElement {
     }
 
     this.welcomeSent = true;
-    this.setMicrophoneEnabled(false);
     this.setStatus("Speaking...", "active");
 
     this.dataChannel.send(
